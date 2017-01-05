@@ -271,8 +271,8 @@ void accumulate_stolen_time(void)
 
 	sst = scan_dispatch_log(acct->starttime_user);
 	ust = scan_dispatch_log(acct->starttime);
-	acct->system_time -= sst;
-	acct->user_time -= ust;
+	acct->stime -= sst;
+	acct->utime -= ust;
 	local_paca->stolen_time += ust + sst;
 
 	local_paca->soft_enabled = save_soft_enabled;
@@ -284,7 +284,7 @@ static inline u64 calculate_stolen_time(u64 stop_tb)
 
 	if (get_paca()->dtl_ridx != be64_to_cpu(get_lppaca()->dtl_idx)) {
 		stolen = scan_dispatch_log(stop_tb);
-		get_paca()->accounting.system_time -= stolen;
+		acct->stime -= stolen;
 	}
 
 	stolen += get_paca()->stolen_time;
@@ -316,17 +316,17 @@ static unsigned long vtime_delta(struct task_struct *tsk,
 
 	now = mftb();
 	nowscaled = read_spurr(now);
-	acct->system_time += now - acct->starttime;
+	acct->stime += now - acct->starttime;
 	acct->starttime = now;
 	deltascaled = nowscaled - acct->startspurr;
 	acct->startspurr = nowscaled;
 
 	*stolen = calculate_stolen_time(now);
 
-	delta = acct->system_time;
-	acct->system_time = 0;
-	udelta = acct->user_time - acct->utime_sspurr;
-	acct->utime_sspurr = acct->user_time;
+	delta = acct->stime;
+	acct->stime = 0;
+	udelta = acct->utime - acct->utime_sspurr;
+	acct->utime_sspurr = acct->utime;
 
 	/*
 	 * Because we don't read the SPURR on every kernel entry/exit,
