@@ -39,6 +39,7 @@
 
 /* Bits in the SLB VSID word */
 #define SLB_VSID_SHIFT		12
+#define SLB_VSID_SHIFT_256M	SLB_VSID_SHIFT
 #define SLB_VSID_SHIFT_1T	24
 #define SLB_VSID_SSIZE_SHIFT	62
 #define SLB_VSID_B		ASM_CONST(0xc000000000000000)
@@ -408,7 +409,7 @@ static inline unsigned long hpt_vpn(unsigned long ea,
 static inline unsigned long hpt_hash(unsigned long vpn,
 				     unsigned int shift, int ssize)
 {
-	int mask;
+	unsigned long mask;
 	unsigned long hash, vsid;
 
 	/* VPN_SHIFT can be atmost 12 */
@@ -521,9 +522,19 @@ extern void slb_set_size(u16 size);
  * because of the modulo operation in vsid scramble.
  */
 
+/*
+ * Max Va bits we support as of now is 68 bits. We want 19 bit
+ * context ID.
+ * Restrictions:
+ * GPU has restrictions of not able to access beyond 128TB
+ * (47 bit effective address). We also cannot do more than 20bit PID.
+ * For p4 and p5 which can only do 65 bit VA, we restrict our CONTEXT_BITS
+ * to 16 bits (ie, we can only have 2^16 pids at the same time).
+ */
+#define VA_BITS			68
 #define CONTEXT_BITS		19
-#define ESID_BITS		18
-#define ESID_BITS_1T		6
+#define ESID_BITS		(VA_BITS - (SID_SHIFT + CONTEXT_BITS))
+#define ESID_BITS_1T		(VA_BITS - (SID_SHIFT_1T + CONTEXT_BITS))
 
 #define ESID_BITS_MASK		((1 << ESID_BITS) - 1)
 #define ESID_BITS_1T_MASK	((1 << ESID_BITS_1T) - 1)
@@ -546,55 +557,55 @@ extern void slb_set_size(u16 size);
 #define KERNEL_REGION_CONTEXT_OFFSET	(0xc - 1)
 
 /*
- * This should be computed such that protovosid * vsid_mulitplier
- * doesn't overflow 64 bits. It should also be co-prime to vsid_modulus
+ * For platforms that support on 65bit VA we limit the context bits
  */
-#define VSID_MULTIPLIER_256M	ASM_CONST(12538073)	/* 24-bit prime */
-#define VSID_BITS_256M		(CONTEXT_BITS + ESID_BITS)
-#define VSID_MODULUS_256M	((1UL<<VSID_BITS_256M)-1)
-
-#define VSID_MULTIPLIER_1T	ASM_CONST(12538073)	/* 24-bit prime */
-#define VSID_BITS_1T		(CONTEXT_BITS + ESID_BITS_1T)
-#define VSID_MODULUS_1T		((1UL<<VSID_BITS_1T)-1)
-
-
-#define USER_VSID_RANGE	(1UL << (ESID_BITS + SID_SHIFT))
+#define MAX_USER_CONTEXT_65BIT_VA ((ASM_CONST(1) << (65 - (SID_SHIFT + ESID_BITS))) - 2)
 
 /*
- * This macro generates asm code to compute the VSID scramble
- * function.  Used in slb_allocate() and do_stab_bolted.  The function
- * computed is: (protovsid*VSID_MULTIPLIER) % VSID_MODULUS
+ * This should be computed such that protovosid * vsid_mulitplier
+ * doesn't overflow 64 bits. The vsid_mutliplier should also be
+ * co-prime to vsid_modulus. We also need to make sure that number
+ * of bits in multiplied result (dividend) is less than twice the number of
+ * protovsid bits for our modulus optmization to work.
  *
- *	rt = register containing the proto-VSID and into which the
- *		VSID will be stored
- *	rx = scratch register (clobbered)
+ * The below table shows the current values used.
+ * |-------+------------+----------------------+------------+-------------------|
+ * |       | Prime Bits | proto VSID_BITS_65VA | Total Bits | 2* prot VSID_BITS |
+ * |-------+------------+----------------------+------------+-------------------|
+ * | 1T    |         24 |                   25 |         49 |                50 |
+ * |-------+------------+----------------------+------------+-------------------|
+ * | 256MB |         24 |                   37 |         61 |                74 |
+ * |-------+------------+----------------------+------------+-------------------|
  *
- * 	- rt and rx must be different registers
- * 	- The answer will end up in the low VSID_BITS bits of rt.  The higher
- * 	  bits may contain other garbage, so you may need to mask the
- * 	  result.
+ * |-------+------------+----------------------+------------+--------------------|
+ * |       | Prime Bits | proto VSID_BITS_68VA | Total Bits | 2* proto VSID_BITS |
+ * |-------+------------+----------------------+------------+--------------------|
+ * | 1T    |         24 |                   28 |         52 |                 56 |
+ * |-------+------------+----------------------+------------+--------------------|
+ * | 256MB |         24 |                   40 |         64 |                 80 |
+ * |-------+------------+----------------------+------------+--------------------|
+ *
  */
-#define ASM_VSID_SCRAMBLE(rt, rx, size)					\
-	lis	rx,VSID_MULTIPLIER_##size@h;				\
-	ori	rx,rx,VSID_MULTIPLIER_##size@l;				\
-	mulld	rt,rt,rx;		/* rt = rt * MULTIPLIER */	\
-									\
-	srdi	rx,rt,VSID_BITS_##size;					\
-	clrldi	rt,rt,(64-VSID_BITS_##size);				\
-	add	rt,rt,rx;		/* add high and low bits */	\
-	/* NOTE: explanation based on VSID_BITS_##size = 36		\
-	 * Now, r3 == VSID (mod 2^36-1), and lies between 0 and		\
-	 * 2^36-1+2^28-1.  That in particular means that if r3 >=	\
-	 * 2^36-1, then r3+1 has the 2^36 bit set.  So, if r3+1 has	\
-	 * the bit clear, r3 already has the answer we want, if it	\
-	 * doesn't, the answer is the low 36 bits of r3+1.  So in all	\
-	 * cases the answer is the low 36 bits of (r3 + ((r3+1) >> 36))*/\
-	addi	rx,rt,1;						\
-	srdi	rx,rx,VSID_BITS_##size;	/* extract 2^VSID_BITS bit */	\
-	add	rt,rt,rx
+#define VSID_MULTIPLIER_256M	ASM_CONST(12538073)	/* 24-bit prime */
+#define VSID_BITS_256M		(VA_BITS - SID_SHIFT)
+#define VSID_BITS_65_256M	(65 - SID_SHIFT)
+/*
+ * Modular multiplicative inverse of VSID_MULTIPLIER under modulo VSID_MODULUS
+ */
+#define VSID_MULINV_256M	ASM_CONST(665548017062)
+
+#define VSID_MULTIPLIER_1T	ASM_CONST(12538073)	/* 24-bit prime */
+#define VSID_BITS_1T		(VA_BITS - SID_SHIFT_1T)
+#define VSID_BITS_65_1T		(65 - SID_SHIFT_1T)
+#define VSID_MULINV_1T		ASM_CONST(209034062)
+
+/* 1TB VSID reserved for VRMA */
+#define VRMA_VSID	0x1ffffffUL
+#define USER_VSID_RANGE	(1UL << (ESID_BITS + SID_SHIFT))
 
 /* 4 bits per slice and we have one slice per 1TB */
-#define SLICE_ARRAY_SIZE  (H_PGTABLE_RANGE >> 41)
+#define SLICE_ARRAY_SIZE	(H_PGTABLE_RANGE >> 41)
+#define TASK_SLICE_ARRAY_SZ(x)	((x)->context.addr_limit >> 41)
 
 #ifndef __ASSEMBLY__
 
@@ -640,7 +651,7 @@ static inline void subpage_prot_init_new_context(struct mm_struct *mm) { }
 #define vsid_scramble(protovsid, size) \
 	((((protovsid) * VSID_MULTIPLIER_##size) % VSID_MODULUS_##size))
 
-#else /* 1 */
+/* simplified form avoiding mod operation */
 #define vsid_scramble(protovsid, size) \
 	({								 \
 		unsigned long x;					 \
@@ -648,6 +659,21 @@ static inline void subpage_prot_init_new_context(struct mm_struct *mm) { }
 		x = (x >> VSID_BITS_##size) + (x & VSID_MODULUS_##size); \
 		(x + ((x+1) >> VSID_BITS_##size)) & VSID_MODULUS_##size; \
 	})
+
+#else /* 1 */
+static inline unsigned long vsid_scramble(unsigned long protovsid,
+				  unsigned long vsid_multiplier, int vsid_bits)
+{
+	unsigned long vsid;
+	unsigned long vsid_modulus = ((1UL << vsid_bits) - 1);
+	/*
+	 * We have same multipler for both 256 and 1T segements now
+	 */
+	vsid = protovsid * vsid_multiplier;
+	vsid = (vsid >> vsid_bits) + (vsid & vsid_modulus);
+	return (vsid + ((vsid + 1) >> vsid_bits)) & vsid_modulus;
+}
+
 #endif /* 1 */
 
 /* Returns the segment size indicator for a user address */
@@ -662,6 +688,10 @@ static inline int user_segment_size(unsigned long addr)
 static inline unsigned long get_vsid(unsigned long context, unsigned long ea,
 				     int ssize)
 {
+	unsigned long va_bits = VA_BITS;
+	unsigned long vsid_bits;
+	unsigned long protovsid;
+
 	/*
 	 * Bad address. We return VSID 0 for that
 	 */
