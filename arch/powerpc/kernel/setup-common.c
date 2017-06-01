@@ -31,7 +31,6 @@
 #include <linux/unistd.h>
 #include <linux/serial.h>
 #include <linux/serial_8250.h>
-#include <linux/debugfs.h>
 #include <linux/percpu.h>
 #include <linux/memblock.h>
 #include <linux/of_platform.h>
@@ -85,7 +84,6 @@ struct machdep_calls *machine_id;
 EXPORT_SYMBOL(machine_id);
 
 int boot_cpuid = -1;
-int boot_hw_cpuid = -1;
 EXPORT_SYMBOL_GPL(boot_cpuid);
 
 unsigned long klimit = (unsigned long) _end;
@@ -115,6 +113,11 @@ EXPORT_SYMBOL_GPL(of_i8042_aux_irq);
 /* XXX should go elsewhere eventually */
 int ppc_do_canonicalize_irqs;
 EXPORT_SYMBOL(ppc_do_canonicalize_irqs);
+#endif
+
+#ifdef CONFIG_CRASH_CORE
+/* This keeps a track of which one is the crashing cpu. */
+int crashing_cpu = -1;
 #endif
 
 /* also used by kexec */
@@ -248,7 +251,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	seq_printf(m, "processor\t: %lu\n", cpu_id);
 	seq_printf(m, "cpu\t\t: ");
 
-	if (cur_cpu_spec->pvr_mask)
+	if (cur_cpu_spec->pvr_mask && cur_cpu_spec->cpu_name)
 		seq_printf(m, "%s", cur_cpu_spec->cpu_name);
 	else
 		seq_printf(m, "unknown (%08x)", pvr);
@@ -320,10 +323,6 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 				break;
 			case 0x1008:	/* 740P/750P ?? */
 				maj = ((pvr >> 8) & 0xFF) - 1;
-				min = pvr & 0xFF;
-				break;
-			case 0x004e: /* POWER9 bits 12-15 give chip type */
-				maj = (pvr >> 8) & 0x0F;
 				min = pvr & 0xFF;
 				break;
 			default:
@@ -460,7 +459,6 @@ void __init smp_setup_cpu_maps(void)
 	struct device_node *dn = NULL;
 	int cpu = 0;
 	int nthreads = 1;
-	bool boot_cpu_added = false;
 
 	DBG("smp_setup_cpu_maps()\n");
 
@@ -487,24 +485,6 @@ void __init smp_setup_cpu_maps(void)
 		}
 
 		nthreads = len / sizeof(int);
-		/*
-		 * If boot cpu hasn't been added to paca and there are only
-		 * last nthreads slots available in paca array then wait
-		 * for boot cpu to show up.
-		 */
-		if (!boot_cpu_added && (cpu + nthreads) >= nr_cpu_ids) {
-			int found = 0;
-
-			DBG("Holding last nthreads paca slots for boot cpu\n");
-			for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
-				if (boot_hw_cpuid == be32_to_cpu(intserv[j])) {
-					found = 1;
-					break;
-				}
-			}
-			if (!found)
-				continue;
-		}
 
 		for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
 			bool avail;
@@ -520,11 +500,6 @@ void __init smp_setup_cpu_maps(void)
 			set_cpu_present(cpu, avail);
 			set_hard_smp_processor_id(cpu, be32_to_cpu(intserv[j]));
 			set_cpu_possible(cpu, true);
-			if (boot_hw_cpuid == be32_to_cpu(intserv[j])) {
-				DBG("Boot cpu %d (hard id %d) added to paca\n",
-				    cpu, be32_to_cpu(intserv[j]));
-				boot_cpu_added = true;
-			}
 			cpu++;
 		}
 	}
@@ -780,19 +755,6 @@ static int __init check_cache_coherency(void)
 late_initcall(check_cache_coherency);
 #endif /* CONFIG_CHECK_CACHE_COHERENCY */
 
-#ifdef CONFIG_DEBUG_FS
-struct dentry *powerpc_debugfs_root;
-EXPORT_SYMBOL(powerpc_debugfs_root);
-
-static int powerpc_debugfs_init(void)
-{
-	powerpc_debugfs_root = debugfs_create_dir("powerpc", NULL);
-
-	return powerpc_debugfs_root == NULL;
-}
-arch_initcall(powerpc_debugfs_init);
-#endif
-
 void ppc_printk_progress(char *s, unsigned short hex)
 {
 	pr_info("%s\n", s);
@@ -940,6 +902,15 @@ void __init setup_arch(char **cmdline_p)
 	init_mm.end_code = (unsigned long) _etext;
 	init_mm.end_data = (unsigned long) _edata;
 	init_mm.brk = klimit;
+
+#ifdef CONFIG_PPC_MM_SLICES
+#ifdef CONFIG_PPC64
+	init_mm.context.addr_limit = DEFAULT_MAP_WINDOW_USER64;
+#else
+#error	"context.addr_limit not initialized."
+#endif
+#endif
+
 #ifdef CONFIG_PPC_64K_PAGES
 	init_mm.context.pte_frag = NULL;
 #endif

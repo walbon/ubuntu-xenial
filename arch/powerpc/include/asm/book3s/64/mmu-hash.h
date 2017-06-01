@@ -521,6 +521,16 @@ extern void slb_set_size(u16 size);
  * because of the modulo operation in vsid scramble.
  */
 
+/*
+ * Max Va bits we support as of now is 68 bits. We want 19 bit
+ * context ID.
+ * Restrictions:
+ * GPU has restrictions of not able to access beyond 128TB
+ * (47 bit effective address). We also cannot do more than 20bit PID.
+ * For p4 and p5 which can only do 65 bit VA, we restrict our CONTEXT_BITS
+ * to 16 bits (ie, we can only have 2^16 pids at the same time).
+ */
+#define VA_BITS			68
 #define CONTEXT_BITS		19
 #define ESID_BITS		(VA_BITS - (SID_SHIFT + CONTEXT_BITS))
 #define ESID_BITS_1T		(VA_BITS - (SID_SHIFT_1T + CONTEXT_BITS))
@@ -640,7 +650,7 @@ static inline void subpage_prot_init_new_context(struct mm_struct *mm) { }
 #define vsid_scramble(protovsid, size) \
 	((((protovsid) * VSID_MULTIPLIER_##size) % VSID_MODULUS_##size))
 
-#else /* 1 */
+/* simplified form avoiding mod operation */
 #define vsid_scramble(protovsid, size) \
 	({								 \
 		unsigned long x;					 \
@@ -648,6 +658,21 @@ static inline void subpage_prot_init_new_context(struct mm_struct *mm) { }
 		x = (x >> VSID_BITS_##size) + (x & VSID_MODULUS_##size); \
 		(x + ((x+1) >> VSID_BITS_##size)) & VSID_MODULUS_##size; \
 	})
+
+#else /* 1 */
+static inline unsigned long vsid_scramble(unsigned long protovsid,
+				  unsigned long vsid_multiplier, int vsid_bits)
+{
+	unsigned long vsid;
+	unsigned long vsid_modulus = ((1UL << vsid_bits) - 1);
+	/*
+	 * We have same multipler for both 256 and 1T segements now
+	 */
+	vsid = protovsid * vsid_multiplier;
+	vsid = (vsid >> vsid_bits) + (vsid & vsid_modulus);
+	return (vsid + ((vsid + 1) >> vsid_bits)) & vsid_modulus;
+}
+
 #endif /* 1 */
 
 /* Returns the segment size indicator for a user address */
@@ -662,6 +687,10 @@ static inline int user_segment_size(unsigned long addr)
 static inline unsigned long get_vsid(unsigned long context, unsigned long ea,
 				     int ssize)
 {
+	unsigned long va_bits = VA_BITS;
+	unsigned long vsid_bits;
+	unsigned long protovsid;
+
 	/*
 	 * Bad address. We return VSID 0 for that
 	 */
