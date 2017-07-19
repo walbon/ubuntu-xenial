@@ -193,6 +193,24 @@ static int mm_fault_error(struct pt_regs *regs, unsigned long addr, int fault)
 }
 
 /*
+ * Define the correct "is_write" bit in error_code based
+ * on the processor family
+ */
+#if (defined(CONFIG_4xx) || defined(CONFIG_BOOKE))
+#define page_fault_is_write(__err)	((__err) & ESR_DST)
+#define page_fault_is_bad(__err)	(0)
+#else
+#define page_fault_is_write(__err)	((__err) & DSISR_ISSTORE)
+#if defined(CONFIG_8xx)
+#define page_fault_is_bad(__err)	((__err) & 0x10000000)
+#elif defined(CONFIG_PPC64)
+#define page_fault_is_bad(__err)	((__err) & DSISR_BAD_FAULT_64S)
+#else
+#define page_fault_is_bad(__err)	((__err) & DSISR_BAD_FAULT_32S)
+#endif
+#endif
+
+/*
  * For 600- and 800-family processors, the error_code parameter is DSISR
  * for a data fault, SRR1 for an instruction fault. For 400-family processors
  * the error_code parameter is ESR for a data fault, 0 for an instruction
@@ -213,6 +231,7 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	struct mm_struct *mm = current->mm;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 	int code = SEGV_MAPERR;
+	int is_user = user_mode(regs);
 	int is_write = 0;
 	int trap = TRAP(regs);
  	int is_exec = trap == 0x400;
@@ -252,6 +271,14 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 
 	if (unlikely(debugger_fault_handler(regs)))
 		goto bail;
+
+	if (unlikely(page_fault_is_bad(error_code))) {
+		if (is_user)
+			_exception(SIGBUS, regs, BUS_OBJERR, address);
+		else
+			rc = SIGBUS;
+		goto bail;
+	}
 
 	/*
 	 * The kernel should never take an execute fault nor should it
