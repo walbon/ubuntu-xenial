@@ -115,12 +115,6 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	if (prev == next)
 		return;
 
-#ifdef CONFIG_PPC_ICSWX
-	/* Switch coprocessor context only if prev or next uses a coprocessor */
-	if (prev->context.acop || next->context.acop)
-		switch_cop(next);
-#endif /* CONFIG_PPC_ICSWX */
-
 	/* We must stop all altivec streams before changing the HW
 	 * context
 	 */
