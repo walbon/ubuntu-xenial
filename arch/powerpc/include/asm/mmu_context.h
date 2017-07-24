@@ -67,6 +67,12 @@ extern void __destroy_context(unsigned long context_id);
 extern void mmu_context_init(void);
 #endif
 
+#if defined(CONFIG_KVM_BOOK3S_HV_POSSIBLE) && defined(CONFIG_PPC_RADIX_MMU)
+extern void radix_kvm_prefetch_workaround(struct mm_struct *mm);
+#else
+static inline void radix_kvm_prefetch_workaround(struct mm_struct *mm) { }
+#endif
+
 extern void switch_cop(struct mm_struct *next);
 extern int use_cop(unsigned long acop, struct mm_struct *mm);
 extern void drop_cop(unsigned long acop, struct mm_struct *mm);
@@ -79,8 +85,7 @@ static inline void switch_mm_irqs_off(struct mm_struct *prev,
 				      struct mm_struct *next,
 				      struct task_struct *tsk)
 {
-	bool new_on_cpu = false;
-
+    bool new_on_cpu = false;
 	/* Mark this context has been used on the new CPU */
 	if (!cpumask_test_cpu(smp_processor_id(), mm_cpumask(next))) {
 		cpumask_set_cpu(smp_processor_id(), mm_cpumask(next));
@@ -131,9 +136,8 @@ static inline void switch_mm_irqs_off(struct mm_struct *prev,
 		asm volatile ("dssall");
 #endif /* CONFIG_ALTIVEC */
 
-	if (new_on_cpu)
-		radix_kvm_prefetch_workaround(next);
-
+    if (new_on_cpu)
+        radix_kvm_prefetch_workaround(next);
 	/*
 	 * The actual HW switching method differs between the various
 	 * sub architectures. Out of line for now
