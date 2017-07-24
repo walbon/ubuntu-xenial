@@ -55,7 +55,8 @@ static inline void switch_mmu_context(struct mm_struct *prev,
 	return switch_slb(tsk, next);
 }
 
-extern int __init_new_context(void);
+extern int hash__alloc_context_id(void);
+extern void hash__reserve_context_id(int id);
 extern void __destroy_context(int context_id);
 static inline void mmu_context_init(void) { }
 #else
@@ -74,8 +75,9 @@ extern void drop_cop(unsigned long acop, struct mm_struct *mm);
  * switch_mm is the entry point called from the architecture independent
  * code in kernel/sched/core.c
  */
-static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
-			     struct task_struct *tsk)
+static inline void switch_mm_irqs_off(struct mm_struct *prev,
+				      struct mm_struct *next,
+				      struct task_struct *tsk)
 {
 	/* Mark this context has been used on the new CPU */
 	if (!cpumask_test_cpu(smp_processor_id(), mm_cpumask(next)))
@@ -107,12 +109,28 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	if (cpu_has_feature(CPU_FTR_ALTIVEC))
 		asm volatile ("dssall");
 #endif /* CONFIG_ALTIVEC */
+
+	if (new_on_cpu)
+		radix_kvm_prefetch_workaround(next);
+
 	/*
 	 * The actual HW switching method differs between the various
 	 * sub architectures. Out of line for now
 	 */
 	switch_mmu_context(prev, next, tsk);
 }
+
+static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+			     struct task_struct *tsk)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	switch_mm_irqs_off(prev, next, tsk);
+	local_irq_restore(flags);
+}
+#define switch_mm_irqs_off switch_mm_irqs_off
+
 
 #define deactivate_mm(tsk,mm)	do { } while (0)
 
@@ -163,12 +181,6 @@ static inline void arch_bprm_mm_init(struct mm_struct *mm,
 
 static inline bool arch_vma_access_permitted(struct vm_area_struct *vma,
 		bool write, bool execute, bool foreign)
-{
-	/* by default, allow everything */
-	return true;
-}
-
-static inline bool arch_pte_access_permitted(pte_t pte, bool write)
 {
 	/* by default, allow everything */
 	return true;

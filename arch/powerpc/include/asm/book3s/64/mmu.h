@@ -30,7 +30,7 @@ extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
 
 #ifndef __ASSEMBLY__
 /*
- * ISA 3.0 partiton and process table entry format
+ * ISA 3.0 partition and process table entry format
  */
 struct prtb_entry {
 	__be64 prtb0;
@@ -59,12 +59,15 @@ extern struct patb_entry *partition_tb;
 #define PRTS_MASK	0x1f		/* process table size field */
 #define PRTB_MASK	0x0ffffffffffff000UL
 
-/*
- * Limit process table to PAGE_SIZE table. This
- * also limit the max pid we can support.
- * MAX_USER_CONTEXT * 16 bytes of space.
- */
-#define PRTB_SIZE_SHIFT	(CONTEXT_BITS + 4)
+/* Number of supported PID bits */
+extern unsigned int mmu_pid_bits;
+
+/* Base PID to allocate from */
+extern unsigned int mmu_base_pid;
+
+#define PRTB_SIZE_SHIFT	(mmu_pid_bits + 4)
+#define PRTB_ENTRIES	(1ul << mmu_pid_bits)
+
 /*
  * Power9 currently only support 64K partition table size.
  */
@@ -86,6 +89,7 @@ typedef struct {
 #ifdef CONFIG_PPC_MM_SLICES
 	u64 low_slices_psize;	/* SLB page size encodings */
 	unsigned char high_slices_psize[SLICE_ARRAY_SIZE];
+	unsigned long addr_limit;
 #else
 	u16 sllp;		/* SLB page size encoding */
 #endif
