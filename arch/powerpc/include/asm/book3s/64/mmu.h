@@ -30,7 +30,7 @@ extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
 
 #ifndef __ASSEMBLY__
 /*
- * ISA 3.0 partiton and process table entry format
+ * ISA 3.0 partition and process table entry format
  */
 struct prtb_entry {
 	__be64 prtb0;
@@ -86,6 +86,7 @@ typedef struct {
 #ifdef CONFIG_PPC_MM_SLICES
 	u64 low_slices_psize;	/* SLB page size encodings */
 	unsigned char high_slices_psize[SLICE_ARRAY_SIZE];
+	unsigned long addr_limit;
 #else
 	u16 sllp;		/* SLB page size encoding */
 #endif
